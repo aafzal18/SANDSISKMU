@@ -1,0 +1,65 @@
+name: Pairs Trading Scan
+
+on:
+  schedule:
+    # Every hour, Mon-Fri, 9am-9pm UTC (roughly covers pre-market through
+    # after-hours for US markets — adjust to your timezone/needs).
+    # Cron format: minute hour day month day-of-week (all in UTC)
+    - cron: "0 9-21 * * 1-5"
+  workflow_dispatch: {}   # lets you also trigger a run manually from the Actions tab
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pairs scan
+        run: python pairs_monitor.py --scan
+
+      - name: Commit updated alert log back to repo
+        run: |
+          git config user.name "pairs-monitor-bot"
+          git config user.email "actions@github.com"
+          git add pairs_alerts_log.csv latest_alerts.json || true
+          git diff --quiet --cached || git commit -m "Update alert log [automated]"
+          git push || true
+
+      - name: Open an issue if there are active alerts
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const alerts = JSON.parse(fs.readFileSync('latest_alerts.json', 'utf8'));
+            if (alerts.length === 0) {
+              console.log("No active alerts this run.");
+              return;
+            }
+            const body = alerts.map(a =>
+              `**${a.pair}** (${a.sector})\n` +
+              `- z-score: ${a.zscore}\n` +
+              `- cointegration p-value: ${a.coint_pvalue}\n` +
+              `- half-life: ${a.half_life_days} days\n` +
+              `- suggested direction: ${a.direction}\n` +
+              `- alert level: ${a.alert_level.toUpperCase()}`
+            ).join('\n\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Pairs divergence alert — ${alerts.length} pair(s) — ${new Date().toISOString().slice(0,16)}`,
+              body: body + "\n\n---\n*Automated alert. This is not financial advice — verify independently before acting.*",
+              labels: ["pairs-alert"],
+            });
