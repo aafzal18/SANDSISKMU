@@ -1,1 +1,1 @@
-# SANDSISKMU
+pairs-trading-monitor
